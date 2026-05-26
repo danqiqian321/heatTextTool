@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heated Text Tool</title>
+   
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+   
+    <!-- React & ReactDOM -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+   
+    <!-- Babel for in-browser JSX compilation -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+   
+    <!-- Lucide Icons (Vanilla) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-black">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+        // --- Custom Lucide Icon Wrapper for Browser React ---
+        const LucideIcon = ({ name, className }) => {
+            const ref = useRef(null);
+            useEffect(() => {
+                if (ref.current && window.lucide && window.lucide.icons[name]) {
+                    ref.current.innerHTML = '';
+                    const svg = window.lucide.createElement(window.lucide.icons[name]);
+                    if (className) svg.setAttribute('class', className);
+                    ref.current.appendChild(svg);
+                }
+            }, [name, className]);
+            return <span ref={ref} className="inline-flex items-center justify-center"></span>;
+        };
+
+        // Icon Definitions
+        const Download = ({className}) => <LucideIcon name="Download" className={className} />;
+        const Sliders = ({className}) => <LucideIcon name="Sliders" className={className} />;
+        const ImageIcon = ({className}) => <LucideIcon name="Image" className={className} />;
+        const Type = ({className}) => <LucideIcon name="Type" className={className} />;
+        const Sparkles = ({className}) => <LucideIcon name="Sparkles" className={className} />;
+        const Plus = ({className}) => <LucideIcon name="Plus" className={className} />;
+        const Trash2 = ({className}) => <LucideIcon name="Trash2" className={className} />;
+        const Play = ({className}) => <LucideIcon name="Play" className={className} />;
+        const Pause = ({className}) => <LucideIcon name="Pause" className={className} />;
+        const Palette = ({className}) => <LucideIcon name="Palette" className={className} />;
+        const Activity = ({className}) => <LucideIcon name="Activity" className={className} />;
+        const ChevronDown = ({className}) => <LucideIcon name="ChevronDown" className={className} />;
+        const ChevronUp = ({className}) => <LucideIcon name="ChevronUp" className={className} />;
+        const Film = ({className}) => <LucideIcon name="Film" className={className} />;
+        const Circle = ({className}) => <LucideIcon name="Circle" className={className} />;
+        const Square = ({className}) => <LucideIcon name="Square" className={className} />;
+        const Monitor = ({className}) => <LucideIcon name="Monitor" className={className} />;
+
+        const PALETTES = [
+            {
+                id: 'acid-pink',
+                name: 'Acid Pink',
+                stops: [
+                { pos: 0.0, color: '#2d004d' },
+                { pos: 0.2, color: '#e00072' },
+                { pos: 0.5, color: '#ff6b00' },
+                { pos: 0.7, color: '#fceb00' },
+                { pos: 1.0, color: '#ffffff' },
+                ]
+            },
+            {
+                id: 'toxic',
+                name: 'Toxic Glow',
+                stops: [
+                { pos: 0.0, color: '#c9ff00' },
+                { pos: 0.2, color: '#ffff00' },
+                { pos: 0.4, color: '#ff0055' },
+                { pos: 0.6, color: '#6600ff' },
+                { pos: 1.0, color: '#d6d6f5' },
+                ]
+            },
+            {
+                id: 'supernova',
+                name: 'Supernova',
+                stops: [
+                { pos: 0.0, color: '#000000' },
+                { pos: 0.05, color: '#1a3c9e' },
+                { pos: 0.2, color: '#4a75e6' },
+                { pos: 0.5, color: '#ffcc00' },
+                { pos: 0.8, color: '#e62e00' },
+                { pos: 1.0, color: '#e3dec3' },
+                ]
+            },
+            {
+                id: 'infrared',
+                name: 'Infrared',
+                stops: [
+                { pos: 0.0, color: '#000000' },
+                { pos: 0.3, color: '#0000ff' },
+                { pos: 0.5, color: '#ff00ff' },
+                { pos: 0.7, color: '#ff0000' },
+                { pos: 0.9, color: '#ffff00' },
+                { pos: 1.0, color: '#ffffff' },
+                ]
+            },
+            {
+                id: 'grayscale',
+                name: 'Raw Blur (Grayscale)',
+                stops: [
+                { pos: 0.0, color: '#000000' },
+                { pos: 1.0, color: '#ffffff' },
+                ]
+            }
+        ];
+
+        // --- WebGL Shader Boilerplate ---
+        const initWebGL = (canvas) => {
+            const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true });
+            if (!gl) return null;
+
+            const vsSource = `
+                attribute vec2 a_position;
+                void main() { gl_Position = vec4(a_position, 0.0, 1.0); }
+            `;
+
+            const fsSource = `
+                precision highp float;
+                uniform sampler2D u_image;
+                uniform sampler2D u_colorMap;
+                uniform float u_time;
+                uniform float u_seed;
+                uniform float u_noiseAmount;
+                uniform float u_lineDensity;
+                uniform float u_lineIntensity;
+                uniform vec2 u_resolution;
+                uniform float u_scale;
+
+                float hash(vec2 p) {
+                    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+                }
+
+                void main() {
+                    vec2 uv = gl_FragCoord.xy / u_resolution.xy;
+                    vec2 texCoord = vec2(uv.x, 1.0 - uv.y);
+                   
+                    float brightness = texture2D(u_image, texCoord).r;
+
+                    if (u_lineIntensity > 0.0) {
+                        float freq = (u_lineDensity * 0.015) / u_scale;
+                        float x = gl_FragCoord.x;
+                        float y = u_resolution.y - gl_FragCoord.y;
+                        float wave = sin(x * freq - y * freq + u_time);
+                        float amp = (u_lineIntensity * 1.5) / 255.0;
+                        brightness += wave * amp;
+                    }
+
+                    brightness = clamp(brightness, 0.0, 1.0);
+                    vec4 finalColor = texture2D(u_colorMap, vec2(brightness, 0.5));
+
+                    if (u_noiseAmount > 0.0) {
+                        float n = (hash(gl_FragCoord.xy + u_seed) - 0.5) * (u_noiseAmount / 255.0);
+                        finalColor.rgb += n;
+                        finalColor.rgb = clamp(finalColor.rgb, 0.0, 1.0);
+                    }
+
+                    gl_FragColor = vec4(finalColor.rgb, 1.0);
+                }
+            `;
+
+            const compileShader = (type, source) => {
+                const shader = gl.createShader(type);
+                gl.shaderSource(shader, source);
+                gl.compileShader(shader);
+                return shader;
+            };
+
+            const program = gl.createProgram();
+            gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vsSource));
+            gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fsSource));
+            gl.linkProgram(program);
+
+            const positionBuffer = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+
+            const locs = {
+                position: gl.getAttribLocation(program, 'a_position'),
+                u_image: gl.getUniformLocation(program, 'u_image'),
+                u_colorMap: gl.getUniformLocation(program, 'u_colorMap'),
+                u_time: gl.getUniformLocation(program, 'u_time'),
+                u_seed: gl.getUniformLocation(program, 'u_seed'),
+                u_noiseAmount: gl.getUniformLocation(program, 'u_noiseAmount'),
+                u_lineDensity: gl.getUniformLocation(program, 'u_lineDensity'),
+                u_lineIntensity: gl.getUniformLocation(program, 'u_lineIntensity'),
+                u_resolution: gl.getUniformLocation(program, 'u_resolution'),
+                u_scale: gl.getUniformLocation(program, 'u_scale')
+            };
+
+            const createTexture = () => {
+                const tex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                return tex;
+            };
+
+            return { gl, program, positionBuffer, locs, textures: { text: createTexture(), gradient: createTexture() } };
+        };
+
+
+        // Reusable Foldable Section Component
+        const FoldableSection = ({ title, icon: Icon, children, defaultOpen = true }) => {
+            const [isOpen, setIsOpen] = useState(defaultOpen);
+
+            return (
+                <div className="border border-[#111111] rounded-xl overflow-hidden mb-4 bg-transparent transition-all">
+                <button
+                    onClick={() => setIsOpen(!isOpen)}
+                    className="w-full flex items-center justify-between p-4 bg-[#F4EFE6] hover:bg-[#E3DBCB] transition-colors text-[#111111]"
+                >
+                    <div className="flex items-center gap-2 font-medium text-lg tracking-wide">
+                    {Icon && <Icon className="w-5 h-5" />}
+                    {title}
+                    </div>
+                    {isOpen ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}
+                </button>
+                {isOpen && (
+                    <div className="p-5 border-t border-[#111111] bg-[#F4EFE6] space-y-4">
+                    {children}
+                    </div>
+                )}
+                </div>
+            );
+        };
+
+        function App() {
+            const canvasRef = useRef(null);
+           
+            const hiddenTextCanvas = useMemo(() => document.createElement('canvas'), []);
+            const hiddenGradCanvas = useMemo(() => document.createElement('canvas'), []);
+            const glStateRef = useRef(null);
+           
+            const [text, setText] = useState('made\nby\ndanqi');
+            const [fontSize, setFontSize] = useState(348);
+            const [fontWeight, setFontWeight] = useState(1000);
+            const [letterSpacing, setLetterSpacing] = useState(-27);
+            const [lineHeightMultiplier, setLineHeightMultiplier] = useState(0.7);
+            const [blurAmount, setBlurAmount] = useState(15);
+            const [noiseAmount, setNoiseAmount] = useState(32);
+            const [lineDensity, setLineDensity] = useState(40);
+            const [lineIntensity, setLineIntensity] = useState(0);
+           
+            const [activeTab, setActiveTab] = useState('design');
+            const [animPreset, setAnimPreset] = useState('random');
+            const [animSpeed, setAnimSpeed] = useState(0.5);
+            const [animAmplitude, setAnimAmplitude] = useState(250);
+            const [animSpread, setAnimSpread] = useState(1.5);
+            const [animEasing, setAnimEasing] = useState(14);
+           
+            const [exportRes, setExportRes] = useState(1080);
+           
+            const [activePalette, setActivePalette] = useState(() => JSON.parse(JSON.stringify(PALETTES[0])));
+            const [isRendering, setIsRendering] = useState(false);
+            const [isAnimated, setIsAnimated] = useState(false);
+            const isAnimatedRef = useRef(false);
+
+            const [isRecording, setIsRecording] = useState(false);
+            const mediaRecorderRef = useRef(null);
+            const recordedChunksRef = useRef([]);
+
+            const updateActivePaletteStop = (index, field, value) => {
+                setActivePalette(prev => {
+                const newStops = [...prev.stops];
+                newStops[index] = { ...newStops[index], [field]: value };
+                return { ...prev, id: 'custom', name: 'Custom Palette', stops: newStops };
+                });
+            };
+
+            const addColorStop = () => {
+                setActivePalette(prev => {
+                const newStops = [...prev.stops, { pos: 0.5, color: '#ff0000' }];
+                return { ...prev, id: 'custom', name: 'Custom Palette', stops: newStops };
+                });
+            };
+
+            const removeColorStop = (index) => {
+                setActivePalette(prev => {
+                if (prev.stops.length <= 2) return prev;
+                const newStops = prev.stops.filter((_, i) => i !== index);
+                return { ...prev, id: 'custom', name: 'Custom Palette', stops: newStops };
+                });
+            };
+
+            const renderCanvas = useCallback((animateOverride = false) => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+
+                if (!glStateRef.current) {
+                glStateRef.current = initWebGL(canvas);
+                }
+                const webgl = glStateRef.current;
+                if (!webgl) return;
+
+                const width = exportRes;
+                const height = exportRes;
+                const scale = width / 1080;
+
+                if (canvas.width !== width) canvas.width = width;
+                if (canvas.height !== height) canvas.height = height;
+                if (hiddenTextCanvas.width !== width) hiddenTextCanvas.width = width;
+                if (hiddenTextCanvas.height !== height) hiddenTextCanvas.height = height;
+
+                const ctx = hiddenTextCanvas.getContext('2d');
+                ctx.filter = 'none';
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, width, height);
+
+                ctx.filter = `blur(${blurAmount * scale}px)`;
+                ctx.fillStyle = '#000000';
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'center';
+
+                const lines = text.split('\n');
+                const calculatedLineHeight = (fontSize * scale) * lineHeightMultiplier;
+                const startY = height / 2 - ((lines.length - 1) * calculatedLineHeight) / 2;
+
+                let charGlobalIndex = 0;
+                const safeTime = Date.now() % 10000000;
+
+                const applyEasing = (val, easeAmount) => {
+                    const t = (val + 1) / 2;
+                    const eased = t < 0.5 ? 16 * t * t * t * t * t : 1 - Math.pow(-2 * t + 2, 5) / 2;
+                    const mix = easeAmount / 100;
+                    return ((t * (1 - mix) + eased * mix) * 2) - 1;
+                };
+
+                lines.forEach((line, index) => {
+                const y = startY + index * calculatedLineHeight;
+               
+                const baseCssWeight = Math.min(Math.max(100, fontWeight), 900);
+                ctx.font = `${baseCssWeight} ${fontSize * scale}px "Inter", "Helvetica Neue", Helvetica, sans-serif`;
+
+                let totalWidth = 0;
+                const charWidths = [];
+                for (let i = 0; i < line.length; i++) {
+                    const w = ctx.measureText(line[i]).width;
+                    charWidths.push(w);
+                    totalWidth += w + (letterSpacing * scale);
+                }
+                if (line.length > 0) totalWidth -= (letterSpacing * scale);
+
+                let currentX = (width / 2) - (totalWidth / 2);
+
+                for (let i = 0; i < line.length; i++) {
+                    const char = line[i];
+                    const charWidth = charWidths[i];
+                    const charCenterX = currentX + (charWidth / 2);
+
+                    let currentWeight = fontWeight;
+                   
+                    if (animateOverride) {
+                    const time = (safeTime / 400) * animSpeed;
+                    let rawWave;
+                   
+                    if (animPreset === 'random') {
+                        const spread = animSpread / 1.5;
+                        rawWave = Math.sin(time * 1.2 + charGlobalIndex * 4.3 * spread) * Math.cos(time * 0.7 + charGlobalIndex * 9.1 * spread) * Math.sin(time * 1.9 + charGlobalIndex * 1.7 * spread);
+                        rawWave = Math.max(-1, Math.min(1, rawWave * 1.8));
+                    } else {
+                        rawWave = Math.sin(time + charGlobalIndex * animSpread);
+                    }
+                   
+                    const easedWave = applyEasing(rawWave, animEasing);
+                    currentWeight = fontWeight + (easedWave * animAmplitude);
+                    currentWeight = Math.max(100, Math.min(1500, currentWeight));
+                    }
+
+                    const cssFontWeight = Math.min(Math.max(100, currentWeight), 900);
+                    ctx.font = `${cssFontWeight} ${fontSize * scale}px "Inter", "Helvetica Neue", Helvetica, sans-serif`;
+                   
+                    ctx.fillText(char, charCenterX, y);
+                   
+                    if (currentWeight > 900) {
+                    ctx.lineWidth = ((currentWeight - 900) / 10) * scale;
+                    ctx.lineJoin = 'round';
+                    ctx.strokeStyle = '#000000';
+                    ctx.strokeText(char, charCenterX, y);
+                    }
+
+                    currentX += charWidth + (letterSpacing * scale);
+                    charGlobalIndex++;
+                }
+                });
+
+                hiddenGradCanvas.width = 256;
+                hiddenGradCanvas.height = 1;
+                const gradCtx = hiddenGradCanvas.getContext('2d');
+                const gradient = gradCtx.createLinearGradient(0, 0, 256, 0);
+
+                const sortedStops = [...activePalette.stops].sort((a, b) => a.pos - b.pos);
+                sortedStops.forEach(stop => gradient.addColorStop(Math.max(0, Math.min(1, stop.pos)), stop.color));
+
+                gradCtx.fillStyle = gradient;
+                gradCtx.fillRect(0, 0, 256, 1);
+
+                const { gl, program, positionBuffer, locs, textures } = webgl;
+                gl.viewport(0, 0, width, height);
+                gl.useProgram(program);
+
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, textures.text);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, hiddenTextCanvas);
+
+                gl.activeTexture(gl.TEXTURE1);
+                gl.bindTexture(gl.TEXTURE_2D, textures.gradient);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, hiddenGradCanvas);
+
+                gl.uniform1i(locs.u_image, 0);
+                gl.uniform1i(locs.u_colorMap, 1);
+               
+                const timeOffset = animateOverride ? (safeTime / 300) * animSpeed : 0;
+                gl.uniform1f(locs.u_time, timeOffset);
+                gl.uniform1f(locs.u_seed, Math.random() * 1000.0);
+                gl.uniform1f(locs.u_noiseAmount, noiseAmount);
+                gl.uniform1f(locs.u_lineDensity, lineDensity);
+                gl.uniform1f(locs.u_lineIntensity, lineIntensity);
+                gl.uniform2f(locs.u_resolution, width, height);
+                gl.uniform1f(locs.u_scale, scale);
+
+                gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+                gl.enableVertexAttribArray(locs.position);
+                gl.vertexAttribPointer(locs.position, 2, gl.FLOAT, false, 0, 0);
+
+                gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+            }, [text, fontSize, fontWeight, letterSpacing, lineHeightMultiplier, blurAmount, noiseAmount, lineDensity, lineIntensity, activePalette, animPreset, animSpeed, animAmplitude, animSpread, animEasing, exportRes, hiddenTextCanvas, hiddenGradCanvas]);
+
+            useEffect(() => {
+                if (isAnimated) return;
+                setIsRendering(true);
+                document.fonts.ready.then(() => {
+                requestAnimationFrame(() => {
+                    renderCanvas(false);
+                    setIsRendering(false);
+                });
+                });
+            }, [renderCanvas, isAnimated]);
+
+            const animationRef = useRef();
+            useEffect(() => {
+                isAnimatedRef.current = isAnimated;
+                if (isAnimated) {
+                const loop = () => {
+                    if (!isAnimatedRef.current) return;
+                    renderCanvas(true);
+                    animationRef.current = requestAnimationFrame(loop);
+                };
+                animationRef.current = requestAnimationFrame(loop);
+                } else {
+                if (animationRef.current) cancelAnimationFrame(animationRef.current);
+                renderCanvas(false);
+                }
+                return () => {
+                if (animationRef.current) cancelAnimationFrame(animationRef.current);
+                };
+            }, [isAnimated, renderCanvas]);
+
+            const handleDownloadImage = () => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                const dataUrl = canvas.toDataURL('image/png');
+                const link = document.createElement('a');
+                link.download = `thermal-text-${exportRes}p-${Date.now()}.png`;
+                link.href = dataUrl;
+                link.click();
+            };
+
+            const getSupportedMimeType = () => {
+                // FIXED: Prioritize H.265/H.264 (MP4) for QuickTime compatibility.
+                const types = [
+                'video/mp4; codecs="hvc1"',        // H.265 (HEVC)
+                'video/mp4; codecs="avc1.4d002a"', // H.264 (Main Profile)
+                'video/mp4; codecs="avc1.42E01E"', // H.264 (Baseline)
+                'video/mp4',
+                'video/webm; codecs="vp9"',
+                'video/webm'
+                ];
+                for (const type of types) {
+                if (MediaRecorder.isTypeSupported(type)) return type;
+                }
+                return '';
+            };
+
+            const startRecording = () => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+
+                if (!isAnimated) setIsAnimated(true);
+
+                // Force a fixed framerate (60 FPS) to keep the MP4 muxer happy.
+                const stream = canvas.captureStream(60); 
+                const mimeType = getSupportedMimeType();
+               
+                const videoBitsPerSecond = exportRes >= 2160 ? 20000000 : 8000000;
+
+                try {
+                const mediaRecorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond });
+                mediaRecorderRef.current = mediaRecorder;
+                recordedChunksRef.current = [];
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data && e.data.size > 0) recordedChunksRef.current.push(e.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    const extension = mimeType.includes('mp4') ? 'mp4' : 'webm';
+                    const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    link.href = url;
+                    link.download = `thermal-animation-${exportRes}p-${Date.now()}.${extension}`;
+                    link.click();
+                   
+                    setTimeout(() => URL.revokeObjectURL(url), 100);
+                };
+
+                // CRITICAL: Call start() WITHOUT a timeslice argument.
+                // Chunking MP4s in Chrome causes the 1-second timestamp corruption bug.
+                // This buffers the video in RAM until you hit stop.
+                mediaRecorder.start();
+                setIsRecording(true);
+                } catch (err) {
+                console.error("Failed to start recording:", err);
+                alert("Video recording is not supported in this browser environment.");
+                }
+            };
+
+            const stopRecording = () => {
+                if (mediaRecorderRef.current && isRecording) {
+                mediaRecorderRef.current.stop();
+                setIsRecording(false);
+                }
+            };
+
+            return (
+                <div className="h-screen w-full bg-black text-[#111111] font-sans flex overflow-hidden selection:bg-[#111111] selection:text-[#F4EFE6]">
+               
+                <style>{`
+                    input[type=range] {
+                    -webkit-appearance: none;
+                    width: 100%;
+                    background: transparent;
+                    }
+                    input[type=range]::-webkit-slider-thumb {
+                    -webkit-appearance: none;
+                    height: 10px;
+                    width: 10px;
+                    border-radius: 50%;
+                    background: #111111;
+                    cursor: pointer;
+                    margin-top: -3px;
+                    box-shadow: 0 0 0 2px #F4EFE6;
+                    }
+                    input[type=range]::-webkit-slider-runnable-track {
+                    width: 100%;
+                    height: 4px;
+                    cursor: pointer;
+                    background: #E3DBCB;
+                    border-radius: 4px;
+                    }
+                    ::-webkit-scrollbar { width: 8px; }
+                    ::-webkit-scrollbar-track { background: transparent; }
+                    ::-webkit-scrollbar-thumb { background: #E3DBCB; border-radius: 4px; }
+                    ::-webkit-scrollbar-thumb:hover { background: #111111; }
+                `}</style>
+
+                <div className="w-full md:w-[420px] shrink-0 border-r-2 border-[#111111] bg-[#F4EFE6] flex flex-col h-full z-10 shadow-2xl">
+                   
+                    <header className="flex items-center justify-between p-6 shrink-0 bg-[#F4EFE6]">
+                    <div className="flex items-center gap-2">
+                        <h1 className="text-2xl font-bold text-[#111111] tracking-tight">Heated Text Tool</h1>
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <button
+                        onClick={() => setIsAnimated(!isAnimated)}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-bold border-2 transition-all ${
+                            isAnimated ? 'bg-[#111111] border-[#111111] text-[#F4EFE6]' : 'bg-transparent border-[#111111] text-[#111111] hover:bg-[#111111] hover:text-[#F4EFE6]'
+                        }`}
+                        >
+                        {isAnimated ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+                        </button>
+                    </div>
+                    </header>
+
+                    <div className="flex px-6 bg-[#F4EFE6] shrink-0 border-b border-[#111111] gap-1 pt-2">
+                    <button
+                        onClick={() => setActiveTab('design')}
+                        className={`flex-1 flex items-center justify-center px-2 py-3 rounded-t-xl border text-sm font-bold transition-all -mb-[1px] relative ${
+                        activeTab === 'design'
+                            ? 'bg-[#F4EFE6] border-[#111111] text-[#111111] z-10 after:absolute after:-bottom-[1px] after:left-0 after:right-0 after:h-[2px] after:bg-[#F4EFE6]'
+                            : 'bg-transparent border-transparent border-b-[#111111] text-[#111111]/60 hover:text-[#111111] hover:bg-[#E3DBCB] z-0'
+                        }`}
+                    >
+                        Design
+                    </button>
+                    <button
+                        onClick={() => { setActiveTab('animation'); setIsAnimated(true); }}
+                        className={`flex-1 flex items-center justify-center px-2 py-3 rounded-t-xl border text-sm font-bold transition-all -mb-[1px] relative ${
+                        activeTab === 'animation'
+                            ? 'bg-[#F4EFE6] border-[#111111] text-[#111111] z-10 after:absolute after:-bottom-[1px] after:left-0 after:right-0 after:h-[2px] after:bg-[#F4EFE6]'
+                            : 'bg-transparent border-transparent border-b-[#111111] text-[#111111]/60 hover:text-[#111111] hover:bg-[#E3DBCB] z-0'
+                        }`}
+                    >
+                        Animate
+                    </button>
+                    <button
+                        onClick={() => setActiveTab('export')}
+                        className={`flex-1 flex items-center justify-center px-2 py-3 rounded-t-xl border text-sm font-bold transition-all -mb-[1px] relative ${
+                        activeTab === 'export'
+                            ? 'bg-[#F4EFE6] border-[#111111] text-[#111111] z-10 after:absolute after:-bottom-[1px] after:left-0 after:right-0 after:h-[2px] after:bg-[#F4EFE6]'
+                            : 'bg-transparent border-transparent border-b-[#111111] text-[#111111]/60 hover:text-[#111111] hover:bg-[#E3DBCB] z-0'
+                        }`}
+                    >
+                        Export
+                    </button>
+                    </div>
+
+                    <div className="flex-1 overflow-y-auto px-6 pb-12 pt-6">
+                   
+                    {activeTab === 'design' ? (
+                        <>
+                        <FoldableSection title="Content" icon={Type} defaultOpen={true}>
+                            <textarea
+                            value={text}
+                            onChange={(e) => setText(e.target.value)}
+                            className="w-full h-32 bg-white border-2 border-[#111111] rounded-xl p-4 text-[#111111] font-medium text-lg focus:outline-none focus:ring-4 focus:ring-[#111111]/20 resize-none transition-all placeholder:text-[#111111]/40"
+                            placeholder="Type something..."
+                            />
+                        </FoldableSection>
+
+                        <FoldableSection title="Parameters" icon={Sliders} defaultOpen={true}>
+                            <div className="space-y-6">
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Font Size</span>
+                                <span>{fontSize}</span>
+                                </div>
+                                <input type="range" min="50" max="400" value={fontSize} onChange={(e) => setFontSize(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Font Weight</span>
+                                <span>{fontWeight}</span>
+                                </div>
+                                <input type="range" min="100" max="1500" step="100" value={fontWeight} onChange={(e) => setFontWeight(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Line Height</span>
+                                <span>{lineHeightMultiplier.toFixed(1)}</span>
+                                </div>
+                                <input type="range" min="0.5" max="2.5" step="0.1" value={lineHeightMultiplier} onChange={(e) => setLineHeightMultiplier(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Letter Spacing</span>
+                                <span>{letterSpacing.toFixed(1)}</span>
+                                </div>
+                                <input type="range" min="-50" max="150" value={letterSpacing} onChange={(e) => setLetterSpacing(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Heat Dispersion</span>
+                                <span>{blurAmount}px</span>
+                                </div>
+                                <input type="range" min="0" max="100" value={blurAmount} onChange={(e) => setBlurAmount(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Wave Lines Density</span>
+                                <span>{lineDensity}</span>
+                                </div>
+                                <input type="range" min="10" max="100" value={lineDensity} onChange={(e) => setLineDensity(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Wave Lines Intensity</span>
+                                <span>{lineIntensity}</span>
+                                </div>
+                                <input type="range" min="0" max="100" value={lineIntensity} onChange={(e) => setLineIntensity(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Film Grain</span>
+                                <span>{noiseAmount}</span>
+                                </div>
+                                <input type="range" min="0" max="100" value={noiseAmount} onChange={(e) => setNoiseAmount(Number(e.target.value))} />
+                            </div>
+                            </div>
+                        </FoldableSection>
+
+                        <FoldableSection title="Gradient Map" icon={ImageIcon} defaultOpen={false}>
+                            <div className="grid grid-cols-2 gap-3 mb-6">
+                            {PALETTES.map((palette) => (
+                                <button
+                                key={palette.id}
+                                onClick={() => setActivePalette(JSON.parse(JSON.stringify(palette)))}
+                                className={`relative overflow-hidden p-3 rounded-xl border-2 text-left transition-all ${
+                                    activePalette.id === palette.id || (activePalette.id === 'custom' && activePalette.name === palette.name)
+                                    ? 'border-[#111111] bg-[#111111] text-[#F4EFE6]'
+                                    : 'border-[#111111] bg-transparent text-[#111111] hover:bg-[#E3DBCB]'
+                                }`}
+                                >
+                                <div className="text-sm font-bold mb-2 truncate">{palette.name}</div>
+                                <div
+                                    className="h-3 w-full rounded-full border border-black/10"
+                                    style={{
+                                    background: `linear-gradient(to right, ${palette.stops.map(s => s.color).join(', ')})`
+                                    }}
+                                />
+                                </button>
+                            ))}
+                            </div>
+
+                            <div className="pt-4 border-t-2 border-[#111111]/20 space-y-4">
+                            <div className="flex items-center justify-between">
+                                <span className="font-bold uppercase tracking-wider">Customize</span>
+                                <button
+                                onClick={addColorStop}
+                                className="text-sm flex items-center gap-1 font-bold border-2 border-[#111111] px-3 py-1.5 rounded-lg hover:bg-[#111111] hover:text-[#F4EFE6] transition-colors"
+                                >
+                                <Plus className="w-4 h-4" /> Add Color
+                                </button>
+                            </div>
+                           
+                            <div className="space-y-4 mt-4">
+                                {activePalette.stops.map((stop, index) => (
+                                <div key={index} className="flex items-center gap-4">
+                                    <input
+                                    type="color"
+                                    value={stop.color}
+                                    onChange={(e) => updateActivePaletteStop(index, 'color', e.target.value)}
+                                    className="w-10 h-10 rounded-lg cursor-pointer border-2 border-[#111111] bg-transparent p-0 [&::-webkit-color-swatch-wrapper]:p-0 [&::-webkit-color-swatch]:border-none [&::-webkit-color-swatch]:rounded-md shrink-0"
+                                    />
+                                    <input
+                                    type="range"
+                                    min="0"
+                                    max="1"
+                                    step="0.01"
+                                    value={stop.pos}
+                                    onChange={(e) => updateActivePaletteStop(index, 'pos', Number(e.target.value))}
+                                    className="flex-1"
+                                    />
+                                    <span className="text-sm font-bold w-12 text-right">
+                                    {Math.round(stop.pos * 100)}%
+                                    </span>
+                                    <button
+                                    onClick={() => removeColorStop(index)}
+                                    disabled={activePalette.stops.length <= 2}
+                                    className="p-2 text-[#111111] hover:bg-[#111111] hover:text-[#F4EFE6] rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:hover:text-[#111111] transition-colors"
+                                    >
+                                    <Trash2 className="w-5 h-5" />
+                                    </button>
+                                </div>
+                                ))}
+                            </div>
+                            </div>
+                        </FoldableSection>
+                        </>
+                    ) : activeTab === 'animation' ? (
+                        <>
+                        <FoldableSection title="Style" icon={Activity} defaultOpen={true}>
+                            <div className="grid grid-cols-2 gap-3">
+                            <button
+                                onClick={() => setAnimPreset('ripple')}
+                                className={`p-4 rounded-xl border-2 text-center font-bold transition-all ${
+                                animPreset === 'ripple'
+                                    ? 'bg-[#111111] border-[#111111] text-[#F4EFE6]'
+                                    : 'border-[#111111] hover:bg-[#E3DBCB] text-[#111111]'
+                                }`}
+                            >
+                                Wave Ripple
+                            </button>
+                            <button
+                                onClick={() => setAnimPreset('random')}
+                                className={`p-4 rounded-xl border-2 text-center font-bold transition-all ${
+                                animPreset === 'random'
+                                    ? 'bg-[#111111] border-[#111111] text-[#F4EFE6]'
+                                    : 'border-[#111111] hover:bg-[#E3DBCB] text-[#111111]'
+                                }`}
+                            >
+                                Chaotic Random
+                            </button>
+                            </div>
+                        </FoldableSection>
+
+                        <FoldableSection title="Modifiers" icon={Sliders} defaultOpen={true}>
+                            <div className="space-y-6">
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Speed</span>
+                                <span>{animSpeed.toFixed(1)}x</span>
+                                </div>
+                                <input type="range" min="0.1" max="3.0" step="0.1" value={animSpeed} onChange={(e) => setAnimSpeed(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Weight Intensity</span>
+                                <span>{animAmplitude}</span>
+                                </div>
+                                <input type="range" min="100" max="1500" step="50" value={animAmplitude} onChange={(e) => setAnimAmplitude(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Letter Offset</span>
+                                <span>{animSpread.toFixed(1)}</span>
+                                </div>
+                                <input type="range" min="0" max="5" step="0.1" value={animSpread} onChange={(e) => setAnimSpread(Number(e.target.value))} />
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex justify-between font-bold text-lg">
+                                <span>Easing (Snappiness)</span>
+                                <span>{animEasing}%</span>
+                                </div>
+                                <input type="range" min="0" max="100" value={animEasing} onChange={(e) => setAnimEasing(Number(e.target.value))} />
+                            </div>
+                            </div>
+                        </FoldableSection>
+                        </>
+                    ) : activeTab === 'export' ? (
+                        <div className="space-y-6">
+                       
+                        <FoldableSection title="Resolution" icon={Monitor} defaultOpen={true}>
+                            <div className="grid grid-cols-2 gap-3 pb-2">
+                            <button
+                                onClick={() => setExportRes(1080)}
+                                className={`p-4 rounded-xl border-2 text-center font-bold transition-all ${
+                                exportRes === 1080
+                                    ? 'bg-[#111111] border-[#111111] text-[#F4EFE6]'
+                                    : 'border-[#111111] hover:bg-[#E3DBCB] text-[#111111]'
+                                }`}
+                            >
+                                1080p<br/><span className="text-xs font-normal opacity-80">Smooth Preview</span>
+                            </button>
+                            <button
+                                onClick={() => setExportRes(2160)}
+                                className={`p-4 rounded-xl border-2 text-center font-bold transition-all ${
+                                exportRes === 2160
+                                    ? 'bg-[#111111] border-[#111111] text-[#F4EFE6]'
+                                    : 'border-[#111111] hover:bg-[#E3DBCB] text-[#111111]'
+                                }`}
+                            >
+                                4K (2160p)<br/><span className="text-xs font-normal opacity-80">Export Quality</span>
+                            </button>
+                            </div>
+                        </FoldableSection>
+
+                        <FoldableSection title="Record Video" icon={Film} defaultOpen={true}>
+                            <div className="flex flex-col items-center gap-4 pb-2">
+                            <p className="text-sm font-medium text-center text-[#111111]/70 leading-relaxed px-2">
+                                Record a high-quality video of your animation. Uses MP4 (H.265/H.264) for native QuickTime compatibility.
+                            </p>
+                           
+                            <button
+                                onClick={isRecording ? stopRecording : startRecording}
+                                className={`relative flex items-center justify-center gap-2 w-full py-4 rounded-xl font-bold border-2 transition-all ${
+                                isRecording
+                                    ? 'bg-red-500 border-red-500 text-black shadow-[0_0_20px_rgba(239,68,68,0.5)] animate-pulse'
+                                    : 'bg-[#111111] border-[#111111] text-[#F4EFE6] hover:bg-transparent hover:text-[#111111]'
+                                }`}
+                            >
+                                {isRecording ? <Square className="w-5 h-5" /> : <Circle className="w-5 h-5 text-red-500" />}
+                                {isRecording ? 'Stop Recording' : 'Start Recording'}
+                            </button>
+                           
+                            {isRecording && (
+                                <div className="flex items-center gap-2 text-red-500 font-bold animate-pulse">
+                                <div className="w-2 h-2 rounded-full bg-red-500"></div>
+                                Recording in progress...
+                                </div>
+                            )}
+                            </div>
+                        </FoldableSection>
+
+                        <FoldableSection title="Export Image" icon={ImageIcon} defaultOpen={true}>
+                            <div className="flex flex-col gap-4 pb-2">
+                            <p className="text-sm font-medium text-[#111111]/70">
+                                Download a high-resolution PNG of the current canvas frame.
+                            </p>
+                            <button
+                                onClick={handleDownloadImage}
+                                className="flex items-center justify-center gap-2 w-full py-4 rounded-xl font-bold border-2 border-[#111111] bg-transparent text-[#111111] hover:bg-[#111111] hover:text-[#F4EFE6] transition-all"
+                            >
+                                <Download className="w-5 h-5" />
+                                Save HD PNG
+                            </button>
+                            </div>
+                        </FoldableSection>
+                        </div>
+                    ) : null}
+
+                    </div>
+                </div>
+
+                <div className="flex-1 flex flex-col items-center justify-center p-6 md:p-12 relative overflow-hidden">
+                    <div
+                        className="w-full aspect-square relative shadow-2xl overflow-hidden bg-transparent"
+                        style={{ maxWidth: 'min(100%, calc(100vh - 6rem), 56rem)' }}
+                    >
+                    <canvas
+                        ref={canvasRef}
+                        width={exportRes}
+                        height={exportRes}
+                        className="w-full h-full object-contain"
+                    />
+                   
+                    <div className={`absolute inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center transition-opacity duration-200 pointer-events-none ${isRendering ? 'opacity-100' : 'opacity-0'}`}>
+                        <div className="w-12 h-12 border-4 border-[#F4EFE6] border-t-transparent rounded-full animate-spin" />
+                    </div>
+                    </div>
+                </div>
+                </div>
+            );
+        }
+
+        // Render the App
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
